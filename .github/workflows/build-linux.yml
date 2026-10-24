@@ -96,11 +96,11 @@ jobs:
           grep -q 'features = \["pulseaudio"\]' src/vendor/fastframe/crates/fastframe-audio/Cargo.toml
           cat >> src/Cargo.toml <<'EOF'
 
-# Local build configuration: play through PulseAudio/ALSA instead of PipeWire,
-# whose API on Ubuntu 22.04 is older than cpal requires.
-[patch."https://github.com/crmne/fastframe"]
-fastframe-audio = { path = "vendor/fastframe/crates/fastframe-audio" }
-EOF
+          # Local build configuration: play through PulseAudio/ALSA instead of
+          # PipeWire, whose API on Ubuntu 22.04 is older than cpal requires.
+          [patch."https://github.com/crmne/fastframe"]
+          fastframe-audio = { path = "vendor/fastframe/crates/fastframe-audio" }
+          EOF
 
       - name: Build
         working-directory: src
