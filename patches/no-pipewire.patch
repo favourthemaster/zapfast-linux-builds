@@ -1,0 +1,41 @@
+diff --git a/crates/fastframe-audio/Cargo.toml b/crates/fastframe-audio/Cargo.toml
+index 91a4f49..de6956d 100644
+--- a/crates/fastframe-audio/Cargo.toml
++++ b/crates/fastframe-audio/Cargo.toml
+@@ -63,7 +63,7 @@ libc = "0.2"
+ # builds bindings against libpipewire, so Linux builds need its headers and
+ # clang (`libpipewire-0.3-dev clang libclang-dev` on Debian and Ubuntu).
+ # The same fork rev as above.
+-cpal = { git = "https://github.com/crmne/cpal", rev = "fcd8b6ebee9d822426fa8d6839cdd89af6e0d491", features = ["pipewire", "pulseaudio"] }
++cpal = { git = "https://github.com/crmne/cpal", rev = "fcd8b6ebee9d822426fa8d6839cdd89af6e0d491", features = ["pulseaudio"] }
+ zbus = { version = "5.19", default-features = false, features = ["blocking-api", "async-io"] }
+ 
+ [[example]]
+diff --git a/crates/fastframe-audio/src/stream.rs b/crates/fastframe-audio/src/stream.rs
+index fc75168..c1ceac2 100644
+--- a/crates/fastframe-audio/src/stream.rs
++++ b/crates/fastframe-audio/src/stream.rs
+@@ -81,7 +81,7 @@ fn default_named_host(naming: &Naming) -> cpal::Host {
+     #[cfg(target_os = "linux")]
+     if !naming.is_empty() {
+         let available = cpal::available_hosts();
+-        for id in [cpal::HostId::PipeWire, cpal::HostId::PulseAudio] {
++        for id in [cpal::HostId::PulseAudio] {
+             if available.contains(&id)
+                 && let Ok(host) = named_host(id, naming)
+             {
+@@ -108,14 +108,6 @@ fn named_host(id: cpal::HostId, naming: &Naming) -> Result<cpal::Host, cpal::Err
+             role: naming.role.map(cpal_role),
+         };
+         match id {
+-            cpal::HostId::PipeWire => {
+-                let mut host = match app {
+-                    Some(app) => cpal::platform::PipeWireHost::with_application(app)?,
+-                    None => cpal::platform::PipeWireHost::new()?,
+-                };
+-                host.set_stream_metadata(metadata)?;
+-                return Ok(host.into());
+-            }
+             cpal::HostId::PulseAudio => {
+                 let mut host = match app {
+                     Some(app) => cpal::platform::PulseAudioHost::with_application(app)?,
