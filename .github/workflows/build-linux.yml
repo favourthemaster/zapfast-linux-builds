@@ -1,0 +1,148 @@
+name: Build ZapFast for Ubuntu 22.04
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Upstream tag to build (leave empty for the latest release)
+        required: false
+        type: string
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM: crmne/zapfast
+
+jobs:
+  build:
+    name: Build (Ubuntu 22.04, x86_64)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve the upstream tag
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          ref="${INPUT_REF:-}"
+          if [ -z "$ref" ]; then
+            ref=$(curl -fsSL "https://api.github.com/repos/${UPSTREAM}/releases/latest" | jq -r .tag_name)
+          fi
+          if [ -z "$ref" ] || [ "$ref" = "null" ]; then
+            echo "Could not resolve an upstream tag" >&2
+            exit 1
+          fi
+          echo "tag=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the upstream source
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          curl -fsSL "https://github.com/${UPSTREAM}/archive/refs/tags/${{ steps.ref.outputs.tag }}.tar.gz" |
+            tar -xz -C src --strip-components=1
+          grep -q '^name = "zapfast"' src/Cargo.toml
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('src/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install GUI and audio build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libclang-dev cmake perl \
+            libx11-dev libxcb1-dev libxcursor-dev libxi-dev libxrandr-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libgl1-mesa-dev libegl1-mesa-dev \
+            libasound2-dev libpulse-dev
+
+      # Upstream builds on Ubuntu 24.04 and requires libpipewire >= 0.3.53 for
+      # cpal's PipeWire host. 22.04 ships 0.3.48, so use the PulseAudio host
+      # (PulseAudio is the sound server on 22.04) and keep glibc at 2.35.
+      - name: Skip PipeWire in fastframe-audio
+        run: |
+          set -euo pipefail
+          ff_tag=$(grep -oP 'crmne/fastframe"\s*,\s*tag = "\K[^"]+' src/Cargo.toml | head -n1)
+          echo "fastframe tag: $ff_tag"
+          git clone --depth 1 --branch "$ff_tag" https://github.com/crmne/fastframe.git src/vendor/fastframe
+          sed -i 's/features = \["pipewire", "pulseaudio"\]/features = ["pulseaudio"]/' \
+            src/vendor/fastframe/crates/fastframe-audio/Cargo.toml
+          grep -q 'features = \["pulseaudio"\]' src/vendor/fastframe/crates/fastframe-audio/Cargo.toml
+          cat >> src/Cargo.toml <<'EOF'
+
+# Local build configuration: play through PulseAudio/ALSA instead of PipeWire,
+# whose API on Ubuntu 22.04 is older than cpal requires.
+[patch."https://github.com/crmne/fastframe"]
+fastframe-audio = { path = "vendor/fastframe/crates/fastframe-audio" }
+EOF
+
+      - name: Build
+        working-directory: src
+        run: cargo build --release -j "$(nproc)"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          version="${{ steps.ref.outputs.version }}"
+          name="zapfast-${version}-ubuntu22.04-x86_64"
+          mkdir -p "dist/${name}"
+          cp src/target/release/zapfast "dist/${name}/"
+          cp src/LICENSE src/THIRD-PARTY-NOTICES.md README.md "dist/${name}/" 2>/dev/null || true
+          cp README.md "dist/${name}/README-zapfast-linux-builds.md"
+          cp src/packaging/applications/zapfast.desktop src/packaging/icons/zapfast.svg "dist/${name}/" 2>/dev/null || true
+          ./dist/${name}/zapfast --version | tee "dist/${name}/VERSION"
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          cd dist && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
+          echo "name=${name}" >> "$GITHUB_ENV"
+
+      - name: Upload the artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zapfast-${{ steps.ref.outputs.version }}-ubuntu22.04-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+
+      - name: Publish a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.ref.outputs.version }}"
+          notes="Linux x86_64 build of ZapFast ${{ steps.ref.outputs.version }} from [${UPSTREAM}](https://github.com/${UPSTREAM}/releases/tag/${tag}), built on Ubuntu 22.04 (glibc 2.35) with the PulseAudio/ALSA audio host instead of PipeWire.
+
+          Built from upstream source by this repository's workflow. ZapFast is MIT licensed; the upstream authors deserve the credit."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$tag" dist/*.tar.gz dist/SHA256SUMS \
+              --target "$GITHUB_SHA" \
+              --title "ZapFast ${{ steps.ref.outputs.version }} (Ubuntu 22.04 build)" \
+              --notes "$notes"
+          fi
